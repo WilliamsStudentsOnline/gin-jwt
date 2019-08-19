@@ -59,6 +59,11 @@ type GinJWTMiddleware struct {
 	// Optional, by default no additional data will be set.
 	PayloadFunc func(data interface{}) MapClaims
 
+	// Update token calls this. It passes in identity data, like authorizor, and the gin
+	// context. From there, the function should work somewhat like payload func to generate
+	// a new payload.
+	UpdateClaims func(claims MapClaims, c *gin.Context) (MapClaims, error)
+
 	// User can define own Unauthorized func.
 	Unauthorized func(*gin.Context, int, string)
 
@@ -494,6 +499,76 @@ func (mw *GinJWTMiddleware) RefreshToken(c *gin.Context) (string, time.Time, err
 
 	for key := range claims {
 		newClaims[key] = claims[key]
+	}
+
+	expire := mw.TimeFunc().Add(mw.Timeout)
+	newClaims["exp"] = expire.Unix()
+	newClaims["orig_iat"] = mw.TimeFunc().Unix()
+	tokenString, err := mw.signedString(newToken)
+
+	if err != nil {
+		return "", time.Now(), err
+	}
+
+	// set cookie
+	if mw.SendCookie {
+		maxage := int(expire.Unix() - time.Now().Unix())
+		c.SetCookie(
+			mw.CookieName,
+			tokenString,
+			maxage,
+			"/",
+			mw.CookieDomain,
+			mw.SecureCookie,
+			mw.CookieHTTPOnly,
+		)
+	}
+
+	return tokenString, expire, nil
+}
+
+// UpdateHandler can be used to update a token. The token still needs to be valid on update.
+// Shall be put under an endpoint that is using the GinJWTMiddleware.
+// Reply will be of the form {"token": "TOKEN"}. It uses the refresh response.
+func (mw *GinJWTMiddleware) UpdateHandler(c *gin.Context) {
+	tokenString, expire, err := mw.UpdateToken(c)
+	if err != nil {
+		mw.unauthorized(c, http.StatusUnauthorized, mw.HTTPStatusMessageFunc(err, c))
+		return
+	}
+
+	mw.RefreshResponse(c, http.StatusOK, tokenString, expire)
+}
+
+// Basically refresh token but we can change the payload
+func (mw *GinJWTMiddleware) UpdateToken(c *gin.Context) (string, time.Time, error) {
+	claims, err := mw.CheckIfTokenExpire(c)
+	if err != nil {
+		return "", time.Now(), err
+	}
+
+	// Create the token
+	newToken := jwt.New(jwt.GetSigningMethod(mw.SigningAlgorithm))
+	newClaims := newToken.Claims.(jwt.MapClaims)
+
+	// Update claims if we can
+	if mw.UpdateClaims != nil {
+		// Convert old claims
+		claimsToUpdate := make(MapClaims, len(claims))
+		for key, value := range claims {
+			claimsToUpdate[key] = value
+		}
+
+		// Get the new claims
+		updatedClaimed, err := mw.UpdateClaims(claimsToUpdate, c)
+		if err != nil {
+			return "", time.Now(), err
+		}
+
+		// Update them in the token
+		for key, value := range updatedClaimed {
+			newClaims[key] = value
+		}
 	}
 
 	expire := mw.TimeFunc().Add(mw.Timeout)
