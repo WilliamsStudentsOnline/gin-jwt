@@ -1,7 +1,6 @@
 package jwt
 
 import (
-	"crypto/rsa"
 	"errors"
 	"io/ioutil"
 	"net/http"
@@ -25,7 +24,7 @@ type GinJWTMiddleware struct {
 	// Realm name to display to the user. Required.
 	Realm string
 
-	// signing algorithm - possible values are HS256, HS384, HS512
+	// signing algorithm - possible values are HS256, HS384, HS512, RS256, RS384, RS512, ES256, ES384, ES512
 	// Optional, default is HS256.
 	SigningAlgorithm string
 
@@ -108,10 +107,10 @@ type GinJWTMiddleware struct {
 	PubKeyFile string
 
 	// Private key
-	privKey *rsa.PrivateKey
+	privKey interface{}
 
 	// Public key
-	pubKey *rsa.PublicKey
+	pubKey interface{}
 
 	// Optionally return the token as a cookie
 	SendCookie bool
@@ -223,10 +222,18 @@ func (mw *GinJWTMiddleware) privateKey() error {
 	if err != nil {
 		return ErrNoPrivKeyFile
 	}
-	key, err := jwt.ParseRSAPrivateKeyFromPEM(keyData)
-	if err != nil {
+
+	var key interface{}
+	switch mw.SigningAlgorithm {
+	case "RS256", "RS512", "RS384":
+		key, err = jwt.ParseRSAPrivateKeyFromPEM(keyData)
+	case "ES256", "ES384", "ES512":
+		key, err = jwt.ParseECPrivateKeyFromPEM(keyData)
+	}
+	if err != nil || key == nil {
 		return ErrInvalidPrivKey
 	}
+
 	mw.privKey = key
 	return nil
 }
@@ -236,17 +243,25 @@ func (mw *GinJWTMiddleware) publicKey() error {
 	if err != nil {
 		return ErrNoPubKeyFile
 	}
-	key, err := jwt.ParseRSAPublicKeyFromPEM(keyData)
-	if err != nil {
+
+	var key interface{}
+	switch mw.SigningAlgorithm {
+	case "RS256", "RS512", "RS384":
+		key, err = jwt.ParseRSAPublicKeyFromPEM(keyData)
+	case "ES256", "ES384", "ES512":
+		key, err = jwt.ParseECPublicKeyFromPEM(keyData)
+	}
+	if err != nil || key == nil {
 		return ErrInvalidPubKey
 	}
+
 	mw.pubKey = key
 	return nil
 }
 
 func (mw *GinJWTMiddleware) usingPublicKeyAlgo() bool {
 	switch mw.SigningAlgorithm {
-	case "RS256", "RS512", "RS384":
+	case "RS256", "RS512", "RS384", "ES256", "ES384", "ES512":
 		return true
 	}
 	return false

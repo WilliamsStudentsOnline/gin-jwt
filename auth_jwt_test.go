@@ -54,6 +54,10 @@ func makeTokenString(SigningAlgorithm string, username string) string {
 		keyData, _ := ioutil.ReadFile("testdata/jwtRS256.key")
 		signKey, _ := jwt.ParseRSAPrivateKeyFromPEM(keyData)
 		tokenString, _ = token.SignedString(signKey)
+	} else if SigningAlgorithm == "ES512" {
+		keyData, _ := ioutil.ReadFile("testdata/jwtES512.key")
+		signKey, _ := jwt.ParseECPrivateKeyFromPEM(keyData)
+		tokenString, _ = token.SignedString(signKey)
 	} else {
 		tokenString, _ = token.SignedString(key)
 	}
@@ -392,6 +396,129 @@ func TestParseTokenRS256(t *testing.T) {
 		}).
 		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
 			assert.Equal(t, http.StatusOK, r.Code)
+		})
+}
+
+func TestParseTokenES512(t *testing.T) {
+	// the middleware to test
+	authMiddleware, _ := New(&GinJWTMiddleware{
+		Realm:            "test zone",
+		Key:              key,
+		Timeout:          time.Hour,
+		MaxRefresh:       time.Hour * 24,
+		SigningAlgorithm: "ES512",
+		PrivKeyFile:      "testdata/jwtES512.key",
+		PubKeyFile:       "testdata/jwtES512.key.pub",
+		Authenticator:    defaultAuthenticator,
+	})
+
+	handler := ginHandler(authMiddleware)
+
+	r := gofight.New()
+
+	r.GET("/auth/hello").
+		SetHeader(gofight.H{
+			"Authorization": "",
+		}).
+		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
+			assert.Equal(t, http.StatusUnauthorized, r.Code)
+		})
+
+	r.GET("/auth/hello").
+		SetHeader(gofight.H{
+			"Authorization": "Test 1234",
+		}).
+		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
+			assert.Equal(t, http.StatusUnauthorized, r.Code)
+		})
+
+	r.GET("/auth/hello").
+		SetHeader(gofight.H{
+			"Authorization": "Bearer " + makeTokenString("HS384", "admin"),
+		}).
+		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
+			assert.Equal(t, http.StatusUnauthorized, r.Code)
+		})
+
+	r.GET("/auth/hello").
+		SetHeader(gofight.H{
+			"Authorization": "Bearer " + makeTokenString("RS256", "admin"),
+		}).
+		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
+			assert.Equal(t, http.StatusUnauthorized, r.Code)
+		})
+
+	r.GET("/auth/hello").
+		SetHeader(gofight.H{
+			"Authorization": "Bearer " + makeTokenString("ES512", "admin"),
+		}).
+		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
+			assert.Equal(t, http.StatusOK, r.Code)
+		})
+}
+
+func TestRefreshHandlerES512(t *testing.T) {
+	// the middleware to test
+	authMiddleware, _ := New(&GinJWTMiddleware{
+		Realm:            "test zone",
+		Key:              key,
+		Timeout:          time.Hour,
+		MaxRefresh:       time.Hour * 24,
+		SigningAlgorithm: "ES512",
+		PrivKeyFile:      "testdata/jwtES512.key",
+		PubKeyFile:       "testdata/jwtES512.key.pub",
+		SendCookie:       true,
+		CookieName:       "jwt",
+		Authenticator:    defaultAuthenticator,
+		RefreshResponse: func(c *gin.Context, code int, token string, t time.Time) {
+			cookie, err := c.Cookie("jwt")
+			if err != nil {
+				log.Println(err)
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"code":    http.StatusOK,
+				"token":   token,
+				"expire":  t.Format(time.RFC3339),
+				"message": "refresh successfully",
+				"cookie":  cookie,
+			})
+		},
+	})
+
+	handler := ginHandler(authMiddleware)
+
+	r := gofight.New()
+
+	r.GET("/auth/refresh_token").
+		SetHeader(gofight.H{
+			"Authorization": "",
+		}).
+		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
+			assert.Equal(t, http.StatusUnauthorized, r.Code)
+		})
+
+	r.GET("/auth/refresh_token").
+		SetHeader(gofight.H{
+			"Authorization": "Test 1234",
+		}).
+		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
+			assert.Equal(t, http.StatusUnauthorized, r.Code)
+		})
+	s := makeTokenString("ES512", "admin")
+	r.GET("/auth/refresh_token").
+		SetHeader(gofight.H{
+			"Authorization": "Bearer " + s,
+		}).
+		SetCookie(gofight.H{
+			"jwt": s,
+		}).
+		Run(handler, func(r gofight.HTTPResponse, rq gofight.HTTPRequest) {
+			message := gjson.Get(r.Body.String(), "message")
+			cookie := gjson.Get(r.Body.String(), "cookie")
+			assert.Equal(t, "refresh successfully", message.String())
+			assert.Equal(t, http.StatusOK, r.Code)
+			assert.Equal(t, s, cookie.String())
 		})
 }
 
